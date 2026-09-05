@@ -450,9 +450,15 @@ class CrocApp(TkinterDnD.Tk):
         self.statusbar.config(text=f"{text}   ·   {stamp}", bg=bg, fg=fg)
 
     def _on_close(self):
-        self.send_tab.shutdown()
-        self.receive_tab.shutdown()
-        self.destroy()
+        try:
+            self.send_tab.shutdown()
+            self.receive_tab.shutdown()
+            self.destroy()
+        finally:
+            # Guarantee this process ends here even if something above hangs
+            # or throws, and even if launched through an intermediary (e.g.
+            # a launcher shim) that doesn't reliably exit when we do.
+            os._exit(0)
 
 
 if __name__ == "__main__":

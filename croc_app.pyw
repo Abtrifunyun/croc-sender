@@ -97,6 +97,7 @@ class SendTab(tk.Frame):
         self.proc = None
         self.busy = False
         self.cancelled = False
+        self.last_line = ""
         self._build_ui()
 
     def _build_ui(self):
@@ -175,6 +176,7 @@ class SendTab(tk.Frame):
         self.cancel_btn.config(state="normal")
         self._set_status("Starting croc…")
         self.app.set_statusbar(f"Sending {names}…", "busy")
+        self.last_line = ""
 
         self.proc = stream_process(
             [CROC_PATH, "--yes", "send", *paths],
@@ -183,6 +185,7 @@ class SendTab(tk.Frame):
         )
 
     def _handle_line(self, line):
+        self.last_line = line
         match = SEND_CODE_PATTERN.search(line)
         if match:
             code = match.group(1)
@@ -208,7 +211,8 @@ class SendTab(tk.Frame):
             self._set_status("Done — the other side finished downloading it.")
             self.app.set_statusbar(f"✓ Delivered: {names}", "ok")
         else:
-            self._set_status(f"croc exited unexpectedly (code {returncode}).", error=True)
+            detail = f": {self.last_line}" if self.last_line else ""
+            self._set_status(f"croc exited (code {returncode}){detail}", error=True)
             self.app.set_statusbar("Send failed.", "error")
         self._reset_idle()
 
@@ -251,6 +255,7 @@ class ReceiveTab(tk.Frame):
         self.cancelled = False
         self.out_dir = str(Path.home() / "Downloads")
         self.last_saved_path = None
+        self.last_line = ""
         self._build_ui()
 
     def _build_ui(self):
@@ -317,6 +322,7 @@ class ReceiveTab(tk.Frame):
         self.show_btn.config(state="disabled")
         self._set_status("Connecting…")
         self.app.set_statusbar(f"Receiving with code {code}…", "busy")
+        self.last_line = ""
 
         os.makedirs(self.out_dir, exist_ok=True)
         self.proc = stream_process(
@@ -326,6 +332,7 @@ class ReceiveTab(tk.Frame):
         )
 
     def _handle_line(self, line):
+        self.last_line = line
         match = RECEIVE_FILE_PATTERN.search(line)
         if match:
             self.last_saved_path = os.path.join(self.out_dir, match.group(1))
@@ -346,7 +353,8 @@ class ReceiveTab(tk.Frame):
                 self.show_btn.config(state="normal")
             self.code_entry.delete(0, "end")
         else:
-            self._set_status(f"croc exited unexpectedly (code {returncode}). Check the code and try again.", error=True)
+            detail = f": {self.last_line}" if self.last_line else ""
+            self._set_status(f"croc exited (code {returncode}){detail}", error=True)
             self.app.set_statusbar("Receive failed.", "error")
         self._reset_idle()
 

@@ -17,6 +17,7 @@ Windows will likely show a SmartScreen warning ("Windows protected your PC") sin
 - **Status bar** — shows a genuine "delivered" / "received" confirmation, because croc's sender process only exits successfully after the other side has actually pulled every byte.
 - **`croc://` link handler** — clicking a `croc://code` link opens straight into the Receive tab, already downloading.
 - **"Send with croc" right-click menu** — on any file or folder in Explorer, including multi-select.
+- **"Compatible with older/mobile apps (v10)" toggle** — croc v11 changed its handshake protocol in a way that's incompatible with clients still on v10 (e.g. crocgui on Android). Check this box on both ends to talk to one of those.
 
 ## Running from source
 
@@ -58,6 +59,22 @@ Runs PyInstaller and copies `croc.exe` from your own local install into `dist\` 
 Everything it writes lives under `HKEY_CURRENT_USER\Software\Classes` — your own user account only, no admin rights needed. Run `.\unregister_integrations.ps1` to remove it again; both scripts were round-trip tested (install → uninstall → verify every key gone → reinstall) before being included here.
 
 Heads up: a `croc://code` link only does something special on a machine that has also run `register_integrations.ps1`. Sending one to someone who hasn't is a no-op for them — the plain code phrase (or the QR code) still works everywhere.
+
+## Troubleshooting
+
+The app now shows croc's actual last output line on failure, not a generic message — so whatever appears after "croc exited (code N):" is verbatim from croc itself. Pulled straight from croc's source rather than guessed; not every internal error string (there are dozens of obscure ones), but the ones you'll realistically run into:
+
+| You see | What it means | Try this |
+|---|---|---|
+| `EOF` / `unexpected EOF` | The connection closed before the transfer finished — most often nobody connected in time, or the other side's app/network dropped mid-transfer | Confirm the other side is actually running and online, then try again |
+| `refusing files` / `refused files` | The receiver's accept prompt got answered "no" (or wasn't answered at all) | Only happens without `--yes` — our Receive tab always sets it, so this means whoever's receiving is using plain `croc <code>` in a terminal without it |
+| `bad password` / `message authentication failed` | The two sides don't agree on the shared secret | Usually a mistyped code — but can also mean a v10/v11 protocol mismatch (see the compatible-mode toggle above) |
+| `password mismatch` | Same root cause as above — wrong code | Double-check the exact code, watch for autocorrect on mobile |
+| `room (secure channel) not ready, maybe peer disconnected` | The other side dropped the connection right as the secure channel was being set up | Try again |
+| `relay connection failed` / `could not connect to <address>` | Can't reach croc's relay server at all | Check your own internet connection — a corporate/school firewall may be blocking it |
+| `could not reconnect to any relay` / `transfer disconnected after N reconnect attempts` | The transfer was interrupted partway and croc gave up resuming it | Just try the whole transfer again |
+| `could not create <path>` or similar file errors | The save folder isn't writable | Pick a different folder in the Receive tab |
+| `received archive failed validation or extraction` | A sent folder arrived corrupted or tampered with | Ask the sender to resend |
 
 ## How croc itself works
 

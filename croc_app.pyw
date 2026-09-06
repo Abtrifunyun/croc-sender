@@ -30,8 +30,18 @@ def find_croc():
     return None
 
 
+def find_croc_compat():
+    """Older v10.x croc, for peers that haven't moved to v11's PAKE-binding
+    protocol change (e.g. crocgui on Android, pinned to v10.6.0) — v10 and
+    v11 cannot complete a handshake with each other."""
+    base = Path(sys.executable).parent if getattr(sys, "frozen", False) else Path(__file__).parent
+    candidate = base / "croc-v10.exe"
+    return str(candidate) if candidate.exists() else None
+
+
 CROC_PATH = find_croc()
-SEND_CODE_PATTERN = re.compile(r"croc (\S[\w-]*\S)\s*\(code copied")
+CROC_COMPAT_PATH = find_croc_compat()
+SEND_CODE_PATTERN = re.compile(r"^croc (\S+)")
 RECEIVE_FILE_PATTERN = re.compile(r"Receiving '([^']+)'")
 
 BG = "#1e1e1e"
@@ -46,6 +56,7 @@ STATUSBAR_ERROR_BG = "#4d1f1f"
 STATUSBAR_IDLE_BG = "#2a2a2a"
 
 NOT_FOUND_MSG = "croc not found on PATH. Install it, then restart this app."
+COMPAT_NOT_FOUND_MSG = "Compatible (v10) croc not bundled with this build."
 
 
 def stream_process(args, on_line, on_done):
@@ -105,8 +116,15 @@ class SendTab(tk.Frame):
         self._build_ui()
 
     def _build_ui(self):
+        self.compat_var = tk.BooleanVar(value=False)
+        tk.Checkbutton(
+            self, text="Compatible with older/mobile apps (v10)", variable=self.compat_var,
+            bg=BG, fg=MUTED, selectcolor=BG_DROP, activebackground=BG, activeforeground=FG,
+            highlightthickness=0, bd=0, font=("Segoe UI", 9),
+        ).pack(pady=(10, 0))
+
         self.drop_zone = tk.Frame(self, bg=BG_DROP, highlightbackground=MUTED, highlightthickness=2, bd=0)
-        self.drop_zone.pack(fill="both", expand=True, padx=20, pady=(16, 10))
+        self.drop_zone.pack(fill="both", expand=True, padx=20, pady=(10, 10))
 
         self.drop_label = tk.Label(
             self.drop_zone,
@@ -147,6 +165,9 @@ class SendTab(tk.Frame):
         if CROC_PATH is None:
             self._set_status(NOT_FOUND_MSG, error=True)
 
+    def _active_croc(self):
+        return CROC_COMPAT_PATH if self.compat_var.get() else CROC_PATH
+
     def _on_enter(self, event):
         if not self.busy:
             self.drop_zone.config(bg=BG_DROP_ACTIVE)
@@ -158,9 +179,6 @@ class SendTab(tk.Frame):
 
     def _on_drop(self, event):
         self._on_leave(event)
-        if CROC_PATH is None:
-            self._set_status(NOT_FOUND_MSG, error=True)
-            return
         if self.busy:
             self._set_status("Still sending the previous drop — wait for it to finish or cancel it.")
             return
@@ -169,6 +187,12 @@ class SendTab(tk.Frame):
             self._start_send(paths)
 
     def _start_send(self, paths):
+        croc = self._active_croc()
+        if croc is None:
+            msg = COMPAT_NOT_FOUND_MSG if self.compat_var.get() else NOT_FOUND_MSG
+            self._set_status(msg, error=True)
+            return
+
         self.busy = True
         self.cancelled = False
         names = ", ".join(os.path.basename(p) for p in paths)
@@ -183,7 +207,7 @@ class SendTab(tk.Frame):
         self.last_line = ""
 
         self.proc = stream_process(
-            [CROC_PATH, "--yes", "send", *paths],
+            [croc, "--yes", "send", *paths],
             on_line=lambda line: self.after(0, self._handle_line, line),
             on_done=lambda rc, err: self.after(0, self._on_finished, rc, err, names),
         )
@@ -285,6 +309,13 @@ class ReceiveTab(tk.Frame):
         self.folder_label.pack(side="left", fill="x", expand=True, padx=(6, 8))
         tk.Button(folder_row, text="Change…", command=self._choose_folder).pack(side="right")
 
+        self.compat_var = tk.BooleanVar(value=False)
+        tk.Checkbutton(
+            self, text="Compatible with older/mobile apps (v10)", variable=self.compat_var,
+            bg=BG, fg=MUTED, selectcolor=BG_DROP, activebackground=BG, activeforeground=FG,
+            highlightthickness=0, bd=0, font=("Segoe UI", 9),
+        ).pack(pady=(0, 6))
+
         self.status_label = tk.Label(
             self, text="Paste a code and click Receive.", font=("Segoe UI", 10),
             bg=BG, fg=MUTED, wraplength=420, justify="center",
@@ -307,9 +338,14 @@ class ReceiveTab(tk.Frame):
             self.out_dir = chosen
             self.folder_label.config(text=self.out_dir)
 
+    def _active_croc(self):
+        return CROC_COMPAT_PATH if self.compat_var.get() else CROC_PATH
+
     def _start_receive(self):
-        if CROC_PATH is None:
-            self._set_status(NOT_FOUND_MSG, error=True)
+        croc = self._active_croc()
+        if croc is None:
+            msg = COMPAT_NOT_FOUND_MSG if self.compat_var.get() else NOT_FOUND_MSG
+            self._set_status(msg, error=True)
             return
         if self.busy:
             return
@@ -330,7 +366,7 @@ class ReceiveTab(tk.Frame):
 
         os.makedirs(self.out_dir, exist_ok=True)
         self.proc = stream_process(
-            [CROC_PATH, "--yes", "--out", self.out_dir, code],
+            [croc, "--yes", "--out", self.out_dir, code],
             on_line=lambda line: self.after(0, self._handle_line, line),
             on_done=lambda rc, err: self.after(0, self._on_finished, rc, err),
         )
@@ -394,8 +430,8 @@ class CrocApp(TkinterDnD.Tk):
     def __init__(self):
         super().__init__()
         self.title("croc")
-        self.geometry("460x520")
-        self.minsize(420, 450)
+        self.geometry("460x540")
+        self.minsize(420, 470)
         self.configure(bg=BG)
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 

@@ -43,6 +43,7 @@ CROC_PATH = find_croc()
 CROC_COMPAT_PATH = find_croc_compat()
 SEND_CODE_PATTERN = re.compile(r"^croc (\S+)")
 RECEIVE_FILE_PATTERN = re.compile(r"Receiving '([^']+)'")
+RECEIVE_PROGRESS_DONE_PATTERN = re.compile(r"^(\S+)\s+100%\s*\|")
 
 BG = "#1e1e1e"
 BG_DROP = "#2a2a2a"
@@ -283,6 +284,7 @@ class ReceiveTab(tk.Frame):
         self.cancelled = False
         self.out_dir = str(Path.home() / "Downloads")
         self.last_saved_path = None
+        self.received_files = []
         self.last_line = ""
         self._build_ui()
 
@@ -357,6 +359,7 @@ class ReceiveTab(tk.Frame):
         self.busy = True
         self.cancelled = False
         self.last_saved_path = None
+        self.received_files = []
         self.receive_btn.config(state="disabled")
         self.cancel_btn.config(state="normal")
         self.show_btn.config(state="disabled")
@@ -373,9 +376,12 @@ class ReceiveTab(tk.Frame):
 
     def _handle_line(self, line):
         self.last_line = line
-        match = RECEIVE_FILE_PATTERN.search(line)
+        match = RECEIVE_FILE_PATTERN.search(line) or RECEIVE_PROGRESS_DONE_PATTERN.search(line)
         if match:
-            self.last_saved_path = os.path.join(self.out_dir, match.group(1))
+            name = match.group(1)
+            self.last_saved_path = os.path.join(self.out_dir, name)
+            if name not in self.received_files:
+                self.received_files.append(name)
         self._set_status(line)
 
     def _on_finished(self, returncode, error):
@@ -386,7 +392,10 @@ class ReceiveTab(tk.Frame):
             self._set_status("Cancelled.")
             self.app.set_statusbar("Receive cancelled.", "error")
         elif returncode == 0:
-            what = os.path.basename(self.last_saved_path) if self.last_saved_path else "file"
+            if len(self.received_files) > 1:
+                what = f"{len(self.received_files)} files"
+            else:
+                what = os.path.basename(self.last_saved_path) if self.last_saved_path else "file"
             self._set_status(f"Done — saved to {self.out_dir}")
             self.app.set_statusbar(f"✓ Received: {what}", "ok")
             if self.last_saved_path and os.path.exists(self.last_saved_path):

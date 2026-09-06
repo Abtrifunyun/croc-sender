@@ -23,6 +23,10 @@ def find_croc():
     if winget_packages.exists():
         for entry in winget_packages.glob("schollz.croc_*/croc.exe"):
             return str(entry)
+    if getattr(sys, "frozen", False):
+        bundled = Path(sys.executable).parent / "croc.exe"
+        if bundled.exists():
+            return str(bundled)
     return None
 
 

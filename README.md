@@ -1,8 +1,14 @@
 # croc-sender
 
-A small native drag-and-drop GUI for [`croc`](https://github.com/schollz/croc), the encrypted peer-to-peer file-transfer CLI. One Python file, no bundled binaries, nothing hidden — built to be fully readable in a few minutes.
+A small native drag-and-drop GUI for [`croc`](https://github.com/schollz/croc), the encrypted peer-to-peer file-transfer CLI. The source is one Python file — nothing hidden, built to be fully readable in a few minutes.
 
 ![Python](https://img.shields.io/badge/python-3.9%2B-blue) ![Platform](https://img.shields.io/badge/platform-Windows-lightgrey) ![License](https://img.shields.io/badge/license-MIT-green)
+
+## Download (no Python needed)
+
+Grab `croc-sender-portable.zip` from [Releases](../../releases/latest) — it's a standalone `.exe` with a copy of `croc.exe` bundled alongside it, built by `build.ps1` from the exact source in this repo. Unzip both files into the same folder and run `croc-sender.exe`. Nothing else to install.
+
+Windows will likely show a SmartScreen warning ("Windows protected your PC") since the exe isn't signed by a registered publisher — that's expected for a small unsigned tool, not a sign of tampering. Click "More info" → "Run anyway", or build it yourself from source with `build.ps1` if you'd rather not trust a prebuilt binary at all.
 
 ## Features
 
@@ -12,12 +18,14 @@ A small native drag-and-drop GUI for [`croc`](https://github.com/schollz/croc), 
 - **`croc://` link handler** — clicking a `croc://code` link opens straight into the Receive tab, already downloading.
 - **"Send with croc" right-click menu** — on any file or folder in Explorer, including multi-select.
 
-## Requirements
+## Running from source
+
+### Requirements
 
 - Windows with Python 3.9+
 - [croc](https://github.com/schollz/croc) itself, installed and on `PATH` (e.g. `winget install --id schollz.croc -e`)
 
-## Install
+### Install
 
 ```bash
 pip install -r requirements.txt
@@ -29,7 +37,15 @@ Then just run it:
 pythonw croc_app.pyw
 ```
 
-(`.pyw` opens with no console window. Double-clicking the file works the same way once Python is installed.)
+(`.pyw` opens with no console window. Double-clicking the file works the same way once Python is installed — though on some setups, `.pyw` files launch through an intermediary Python launcher that spawns the real interpreter as a child process and doesn't reliably exit when you close the window. If closing the window doesn't fully quit it, make a shortcut that points directly at your Python install's `pythonw.exe` with `croc_app.pyw` as its argument instead.)
+
+### Building the standalone exe yourself
+
+```powershell
+.\build.ps1
+```
+
+Runs PyInstaller and copies `croc.exe` from your own local install into `dist\` next to the packaged app — it does not download anything. See the script for the exact command; there's nothing else to it.
 
 ## Optional: OS integration
 

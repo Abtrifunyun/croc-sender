@@ -1,3 +1,4 @@
 tkinterdnd2
 qrcode
 pillow
+psutil

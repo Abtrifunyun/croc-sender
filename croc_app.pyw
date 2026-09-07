@@ -11,6 +11,7 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, font as tkfont, ttk
 
+import psutil
 import qrcode
 from PIL import Image, ImageTk
 from tkinterdnd2 import DND_FILES, TkinterDnD
@@ -45,6 +46,10 @@ CROC_COMPAT_PATH = find_croc_compat()
 SEND_CODE_PATTERN = re.compile(r"^croc (.+)$")
 RECEIVE_FILE_PATTERN = re.compile(r"Receiving '([^']+)'")
 RECEIVE_PROGRESS_DONE_PATTERN = re.compile(r"^(\S+)\s+100%\s*\|")
+PERCENT_PATTERN = re.compile(r"(\d{1,3})%")
+SIZE_PATTERN = re.compile(r"\(([\d.]+)\s*(B|kB|MB|GB)\)")
+SPEED_PATTERN = re.compile(r"([\d.]+)\s*(B|kB|MB|GB)/s")
+UNIT_MULTIPLIERS = {"B": 1, "kB": 1_000, "MB": 1_000_000, "GB": 1_000_000_000}
 
 BG = "#1e1e1e"
 BG_DROP = "#2a2a2a"
@@ -76,6 +81,66 @@ def save_settings(data):
         SETTINGS_PATH.write_text(json.dumps(data))
     except Exception:
         pass
+
+
+def format_bytes_per_sec(bps):
+    if bps >= 1_000_000_000:
+        return f"{bps / 1_000_000_000:.2f} GB/s"
+    if bps >= 1_000_000:
+        return f"{bps / 1_000_000:.2f} MB/s"
+    if bps >= 1_000:
+        return f"{bps / 1_000:.1f} kB/s"
+    return f"{bps:.0f} B/s"
+
+
+def format_elapsed(seconds):
+    m, s = divmod(int(seconds), 60)
+    h, m = divmod(m, 60)
+    if h:
+        return f"{h}:{m:02d}:{s:02d}"
+    return f"{m}:{s:02d}"
+
+
+class TransferStats:
+    """Tracks speed/elapsed/peak for one transfer from start to finish,
+    parsed straight from croc's own progress output."""
+
+    def __init__(self):
+        self.start_time = None
+        self.total_bytes = None
+        self.peak_bps = 0.0
+        self.last_bps = None
+
+    def start(self):
+        self.start_time = time.monotonic()
+        self.total_bytes = None
+        self.peak_bps = 0.0
+        self.last_bps = None
+
+    def feed_line(self, line):
+        if self.total_bytes is None:
+            m = SIZE_PATTERN.search(line)
+            if m:
+                self.total_bytes = float(m.group(1)) * UNIT_MULTIPLIERS.get(m.group(2), 1)
+        m = SPEED_PATTERN.search(line)
+        if m:
+            bps = float(m.group(1)) * UNIT_MULTIPLIERS.get(m.group(2), 1)
+            self.last_bps = bps
+            if bps > self.peak_bps:
+                self.peak_bps = bps
+
+    def elapsed(self):
+        return time.monotonic() - self.start_time if self.start_time else 0.0
+
+    def text(self, final=False):
+        parts = [f"Elapsed {format_elapsed(self.elapsed())}"]
+        if final and self.total_bytes and self.elapsed() > 0:
+            parts.append(f"avg {format_bytes_per_sec(self.total_bytes / self.elapsed())}")
+        elif self.last_bps is not None:
+            parts.append(f"now {format_bytes_per_sec(self.last_bps)}")
+        if self.peak_bps:
+            parts.append(f"peak {format_bytes_per_sec(self.peak_bps)}")
+        return "   ·   ".join(parts)
 
 
 def stream_process(args, on_line, on_done):
@@ -132,24 +197,28 @@ class SendTab(tk.Frame):
         self.busy = False
         self.cancelled = False
         self.last_line = ""
+        self.stats = TransferStats()
         self._build_ui()
 
     def _build_ui(self):
-        relay_row = tk.Frame(self, bg=BG)
-        relay_row.pack(fill="x", padx=20, pady=(10, 0))
-        tk.Label(relay_row, text="Relay (optional):", bg=BG, fg=MUTED, font=("Segoe UI", 9)).pack(side="left")
+        settings = tk.Frame(self, bg=BG_DROP)
+        settings.pack(fill="x", padx=20, pady=(14, 0))
+
+        relay_row = tk.Frame(settings, bg=BG_DROP)
+        relay_row.pack(fill="x", padx=10, pady=(8, 4))
+        tk.Label(relay_row, text="Relay (optional):", bg=BG_DROP, fg=MUTED, font=("Segoe UI", 9)).pack(side="left")
         self.relay_entry = tk.Entry(
             relay_row, textvariable=self.app.relay_var, font=("Segoe UI", 9),
-            bg=BG_DROP, fg=FG, insertbackground=FG, relief="flat",
+            bg=BG, fg=FG, insertbackground=FG, relief="flat",
         )
         self.relay_entry.pack(side="left", fill="x", expand=True, ipady=3, padx=(6, 0))
 
         self.compat_var = tk.BooleanVar(value=False)
         tk.Checkbutton(
-            self, text="Compatible with older/mobile apps (v10)", variable=self.compat_var,
-            bg=BG, fg=MUTED, selectcolor=BG_DROP, activebackground=BG, activeforeground=FG,
+            settings, text="Compatible with older/mobile apps (v10)", variable=self.compat_var,
+            bg=BG_DROP, fg=MUTED, selectcolor=BG, activebackground=BG_DROP, activeforeground=FG,
             highlightthickness=0, bd=0, font=("Segoe UI", 9),
-        ).pack(pady=(6, 0))
+        ).pack(anchor="w", padx=10, pady=(0, 8))
 
         self.drop_zone = tk.Frame(self, bg=BG_DROP, highlightbackground=MUTED, highlightthickness=2, bd=0)
         self.drop_zone.pack(fill="both", expand=True, padx=20, pady=(10, 10))
@@ -175,11 +244,20 @@ class SendTab(tk.Frame):
         self.copy_btn = tk.Button(self, text="Copy code", command=self._copy_code, state="disabled")
         self.copy_btn.pack(pady=(6, 0))
 
+        self.progress_var = tk.DoubleVar(value=0)
+        self.progress_bar = ttk.Progressbar(
+            self, variable=self.progress_var, maximum=100, style="Croc.Horizontal.TProgressbar",
+        )
+        self.progress_bar.pack(fill="x", padx=20, pady=(10, 0))
+
         self.status_label = tk.Label(
             self, text="Drop a file to send it.", font=("Segoe UI", 10),
             bg=BG, fg=MUTED, wraplength=420, justify="center",
         )
-        self.status_label.pack(pady=(10, 4), padx=16)
+        self.status_label.pack(pady=(6, 0), padx=16)
+
+        self.stats_label = tk.Label(self, text="", font=("Segoe UI", 9), bg=BG, fg=MUTED)
+        self.stats_label.pack(pady=(2, 4))
 
         self.cancel_btn = tk.Button(self, text="Cancel", command=self._cancel, state="disabled")
         self.cancel_btn.pack(pady=(0, 14))
@@ -230,9 +308,13 @@ class SendTab(tk.Frame):
         self.qr_photo = None
         self.copy_btn.config(state="disabled")
         self.cancel_btn.config(state="normal")
+        self.progress_var.set(0)
         self._set_status("Starting croc…")
         self.app.set_statusbar(f"Sending {names}…", "busy")
         self.last_line = ""
+        self.stats.start()
+        self.stats_label.config(text=self.stats.text())
+        self.after(1000, self._tick_stats)
 
         args = [croc, "--yes"]
         relay = self.app.relay_var.get().strip()
@@ -246,8 +328,17 @@ class SendTab(tk.Frame):
             on_done=lambda rc, err: self.after(0, self._on_finished, rc, err, names),
         )
 
+    def _tick_stats(self):
+        if self.busy:
+            self.stats_label.config(text=self.stats.text())
+            self.after(1000, self._tick_stats)
+
     def _handle_line(self, line):
         self.last_line = line
+        self.stats.feed_line(line)
+        pm = PERCENT_PATTERN.search(line)
+        if pm:
+            self.progress_var.set(int(pm.group(1)))
         match = SEND_CODE_PATTERN.search(line)
         if match:
             # The code is always the last token on the line -- anything
@@ -265,6 +356,7 @@ class SendTab(tk.Frame):
             self._set_status(f"Waiting for the other person to run: croc {code}")
         else:
             self._set_status(line)
+        self.stats_label.config(text=self.stats.text())
 
     def _on_finished(self, returncode, error, names):
         if error is not None:
@@ -274,8 +366,10 @@ class SendTab(tk.Frame):
             self._set_status("Cancelled.")
             self.app.set_statusbar("Send cancelled.", "error")
         elif returncode == 0:
+            self.progress_var.set(100)
             self._set_status("Done — the other side finished downloading it.")
             self.app.set_statusbar(f"✓ Delivered: {names}", "ok")
+            self.stats_label.config(text=self.stats.text(final=True))
         else:
             detail = f": {self.last_line}" if self.last_line else ""
             self._set_status(f"croc exited (code {returncode}){detail}", error=True)
@@ -323,6 +417,7 @@ class ReceiveTab(tk.Frame):
         self.last_saved_path = None
         self.received_files = []
         self.last_line = ""
+        self.stats = TransferStats()
         self._build_ui()
 
     def _build_ui(self):
@@ -348,27 +443,39 @@ class ReceiveTab(tk.Frame):
         self.folder_label.pack(side="left", fill="x", expand=True, padx=(6, 8))
         tk.Button(folder_row, text="Change…", command=self._choose_folder).pack(side="right")
 
-        relay_row = tk.Frame(self, bg=BG)
-        relay_row.pack(fill="x", padx=20, pady=(0, 6))
-        tk.Label(relay_row, text="Relay (optional):", bg=BG, fg=MUTED, font=("Segoe UI", 9)).pack(side="left")
+        settings = tk.Frame(self, bg=BG_DROP)
+        settings.pack(fill="x", padx=20, pady=(0, 10))
+
+        relay_row = tk.Frame(settings, bg=BG_DROP)
+        relay_row.pack(fill="x", padx=10, pady=(8, 4))
+        tk.Label(relay_row, text="Relay (optional):", bg=BG_DROP, fg=MUTED, font=("Segoe UI", 9)).pack(side="left")
         self.relay_entry = tk.Entry(
             relay_row, textvariable=self.app.relay_var, font=("Segoe UI", 9),
-            bg=BG_DROP, fg=FG, insertbackground=FG, relief="flat",
+            bg=BG, fg=FG, insertbackground=FG, relief="flat",
         )
         self.relay_entry.pack(side="left", fill="x", expand=True, ipady=3, padx=(6, 0))
 
         self.compat_var = tk.BooleanVar(value=False)
         tk.Checkbutton(
-            self, text="Compatible with older/mobile apps (v10)", variable=self.compat_var,
-            bg=BG, fg=MUTED, selectcolor=BG_DROP, activebackground=BG, activeforeground=FG,
+            settings, text="Compatible with older/mobile apps (v10)", variable=self.compat_var,
+            bg=BG_DROP, fg=MUTED, selectcolor=BG, activebackground=BG_DROP, activeforeground=FG,
             highlightthickness=0, bd=0, font=("Segoe UI", 9),
-        ).pack(pady=(0, 6))
+        ).pack(anchor="w", padx=10, pady=(0, 8))
+
+        self.progress_var = tk.DoubleVar(value=0)
+        self.progress_bar = ttk.Progressbar(
+            self, variable=self.progress_var, maximum=100, style="Croc.Horizontal.TProgressbar",
+        )
+        self.progress_bar.pack(fill="x", padx=20, pady=(6, 0))
 
         self.status_label = tk.Label(
             self, text="Paste a code and click Receive.", font=("Segoe UI", 10),
             bg=BG, fg=MUTED, wraplength=420, justify="center",
         )
-        self.status_label.pack(pady=(20, 4), padx=16)
+        self.status_label.pack(pady=(10, 0), padx=16)
+
+        self.stats_label = tk.Label(self, text="", font=("Segoe UI", 9), bg=BG, fg=MUTED)
+        self.stats_label.pack(pady=(2, 4))
 
         btn_row = tk.Frame(self, bg=BG)
         btn_row.pack(pady=(0, 10))
@@ -409,9 +516,13 @@ class ReceiveTab(tk.Frame):
         self.receive_btn.config(state="disabled")
         self.cancel_btn.config(state="normal")
         self.show_btn.config(state="disabled")
+        self.progress_var.set(0)
         self._set_status("Connecting…")
         self.app.set_statusbar(f"Receiving with code {code}…", "busy")
         self.last_line = ""
+        self.stats.start()
+        self.stats_label.config(text=self.stats.text())
+        self.after(1000, self._tick_stats)
 
         os.makedirs(self.out_dir, exist_ok=True)
         args = [croc, "--yes"]
@@ -426,8 +537,17 @@ class ReceiveTab(tk.Frame):
             on_done=lambda rc, err: self.after(0, self._on_finished, rc, err),
         )
 
+    def _tick_stats(self):
+        if self.busy:
+            self.stats_label.config(text=self.stats.text())
+            self.after(1000, self._tick_stats)
+
     def _handle_line(self, line):
         self.last_line = line
+        self.stats.feed_line(line)
+        pm = PERCENT_PATTERN.search(line)
+        if pm:
+            self.progress_var.set(int(pm.group(1)))
         match = RECEIVE_FILE_PATTERN.search(line) or RECEIVE_PROGRESS_DONE_PATTERN.search(line)
         if match:
             name = match.group(1)
@@ -435,6 +555,7 @@ class ReceiveTab(tk.Frame):
             if name not in self.received_files:
                 self.received_files.append(name)
         self._set_status(line)
+        self.stats_label.config(text=self.stats.text())
 
     def _on_finished(self, returncode, error):
         if error is not None:
@@ -444,12 +565,14 @@ class ReceiveTab(tk.Frame):
             self._set_status("Cancelled.")
             self.app.set_statusbar("Receive cancelled.", "error")
         elif returncode == 0:
+            self.progress_var.set(100)
             if len(self.received_files) > 1:
                 what = f"{len(self.received_files)} files"
             else:
                 what = os.path.basename(self.last_saved_path) if self.last_saved_path else "file"
             self._set_status(f"Done — saved to {self.out_dir}")
             self.app.set_statusbar(f"✓ Received: {what}", "ok")
+            self.stats_label.config(text=self.stats.text(final=True))
             if self.last_saved_path and os.path.exists(self.last_saved_path):
                 self.show_btn.config(state="normal")
             self.code_entry.delete(0, "end")
@@ -487,12 +610,88 @@ class ReceiveTab(tk.Frame):
                 pass
 
 
+class RunningTab(tk.Frame):
+    """Lists every croc.exe / croc-v10.exe process on the system, however it
+    was launched -- our own tabs, a right-click send, or a bare terminal
+    command -- so nothing can be silently running out of view."""
+
+    def __init__(self, master, app):
+        super().__init__(master, bg=BG)
+        self.app = app
+        self._build_ui()
+        self._refresh()
+
+    def _build_ui(self):
+        header = tk.Frame(self, bg=BG)
+        header.pack(fill="x", padx=20, pady=(16, 8))
+        tk.Label(header, text="Running croc processes", bg=BG, fg=FG, font=("Segoe UI", 11)).pack(side="left")
+        tk.Button(header, text="Refresh now", command=self._refresh).pack(side="right")
+
+        tk.Label(
+            self, text="Updates automatically every couple of seconds.",
+            bg=BG, fg=MUTED, font=("Segoe UI", 9),
+        ).pack(anchor="w", padx=20)
+
+        self.list_frame = tk.Frame(self, bg=BG)
+        self.list_frame.pack(fill="both", expand=True, padx=20, pady=(8, 16))
+
+    @staticmethod
+    def _describe(parts):
+        if not parts:
+            return "croc"
+        if len(parts) > 1 and parts[1] == "relay":
+            return "Relay server"
+        if "send" in parts:
+            for part in reversed(parts):
+                if not part.startswith("-") and part != "send" and ":" not in part:
+                    return f"Sending {os.path.basename(part)}"
+            return "Sending"
+        return f"Receiving (code: {parts[-1]})" if parts[-1] else "Receiving"
+
+    def _refresh(self):
+        for child in self.list_frame.winfo_children():
+            child.destroy()
+
+        rows = []
+        try:
+            for proc in psutil.process_iter(["pid", "name", "cmdline"]):
+                name = (proc.info.get("name") or "").lower()
+                if name in ("croc.exe", "croc-v10.exe"):
+                    rows.append((proc.info["pid"], proc.info.get("cmdline") or []))
+        except Exception:
+            pass
+
+        if not rows:
+            tk.Label(
+                self.list_frame, text="No croc processes running.",
+                bg=BG, fg=MUTED, font=("Segoe UI", 10),
+            ).pack(pady=20)
+        else:
+            for pid, parts in rows:
+                row = tk.Frame(self.list_frame, bg=BG_DROP)
+                row.pack(fill="x", pady=(0, 6))
+                tk.Label(
+                    row, text=f"PID {pid}   ·   {self._describe(parts)}",
+                    bg=BG_DROP, fg=FG, font=("Segoe UI", 9), anchor="w",
+                ).pack(side="left", fill="x", expand=True, padx=10, pady=8)
+                tk.Button(row, text="Kill", command=lambda p=pid: self._kill(p)).pack(side="right", padx=8)
+
+        self.after(2000, self._refresh)
+
+    def _kill(self, pid):
+        try:
+            psutil.Process(pid).terminate()
+        except Exception:
+            pass
+        self._refresh()
+
+
 class CrocApp(TkinterDnD.Tk):
     def __init__(self):
         super().__init__()
         self.title("croc")
-        self.geometry("460x570")
-        self.minsize(420, 500)
+        self.geometry("460x630")
+        self.minsize(420, 540)
         self.configure(bg=BG)
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
@@ -504,6 +703,11 @@ class CrocApp(TkinterDnD.Tk):
             "TNotebook.Tab",
             background=[("selected", BG_DROP_ACTIVE)],
             foreground=[("selected", ACCENT)],
+        )
+        style.configure(
+            "Croc.Horizontal.TProgressbar",
+            troughcolor=BG_DROP, background=ACCENT, bordercolor=BG_DROP,
+            lightcolor=ACCENT, darkcolor=ACCENT, thickness=8,
         )
 
         self.statusbar = tk.Label(
@@ -520,8 +724,10 @@ class CrocApp(TkinterDnD.Tk):
 
         self.send_tab = SendTab(self.notebook, self)
         self.receive_tab = ReceiveTab(self.notebook, self)
+        self.running_tab = RunningTab(self.notebook, self)
         self.notebook.add(self.send_tab, text="Send")
         self.notebook.add(self.receive_tab, text="Receive")
+        self.notebook.add(self.running_tab, text="Running")
 
         if CROC_PATH is None:
             self.set_statusbar(NOT_FOUND_MSG, "error")

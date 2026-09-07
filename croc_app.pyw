@@ -42,7 +42,7 @@ def find_croc_compat():
 
 CROC_PATH = find_croc()
 CROC_COMPAT_PATH = find_croc_compat()
-SEND_CODE_PATTERN = re.compile(r"^croc (\S+)")
+SEND_CODE_PATTERN = re.compile(r"^croc (.+)$")
 RECEIVE_FILE_PATTERN = re.compile(r"Receiving '([^']+)'")
 RECEIVE_PROGRESS_DONE_PATTERN = re.compile(r"^(\S+)\s+100%\s*\|")
 
@@ -250,7 +250,11 @@ class SendTab(tk.Frame):
         self.last_line = line
         match = SEND_CODE_PATTERN.search(line)
         if match:
-            code = match.group(1)
+            # The code is always the last token on the line -- anything
+            # between "croc" and it (e.g. --relay <address>) is just an
+            # extra flag croc is suggesting the receiver also pass.
+            tail = re.sub(r"\s*\(.*\)\s*$", "", match.group(1)).strip()
+            code = tail.split()[-1]
             self.code_label.config(text=code)
             self.copy_btn.config(state="normal")
             try:

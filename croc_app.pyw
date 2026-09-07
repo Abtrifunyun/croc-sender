@@ -149,6 +149,68 @@ class TransferStats:
         return "   ·   ".join(parts)
 
 
+def build_global_args(app):
+    """Flags valid before the send/receive subcommand -- from `croc --help`."""
+    args = []
+    if app.no_compress_var.get():
+        args.append("--no-compress")
+    throttle = app.throttle_var.get().strip()
+    if throttle:
+        args += ["--throttleUpload", throttle]
+    if app.local_only_var.get():
+        args.append("--local")
+    pass_val = app.pass_var.get().strip()
+    if pass_val:
+        args += ["--pass", pass_val]
+    if app.internal_dns_var.get():
+        args.append("--internal-dns")
+    socks5 = app.socks5_var.get().strip()
+    if socks5:
+        args += ["--socks5", socks5]
+    exists = app.exists_behavior_var.get()
+    if exists == "overwrite":
+        args.append("--overwrite")
+    elif exists == "rename":
+        args.append("--rename")
+    return args
+
+
+def build_send_args(app):
+    """Flags valid only after `send` -- from `croc send --help`."""
+    args = []
+    transfers = app.transfers_var.get()
+    if transfers and transfers != 4:
+        args += ["--transfers", str(transfers)]
+    hash_algo = app.hash_var.get()
+    if hash_algo and hash_algo != "xxhash":
+        args += ["--hash", hash_algo]
+    transport = app.transport_var.get()
+    if transport and transport != "auto":
+        args += ["--transport", transport]
+    if app.zip_var.get():
+        args.append("--zip")
+    if app.git_var.get():
+        args.append("--git")
+    exclude = app.exclude_var.get().strip()
+    if exclude:
+        args += ["--exclude", exclude]
+    port = app.port_var.get().strip()
+    if port:
+        args += ["--port", port]
+    code = app.code_var.get().strip()
+    if code:
+        args += ["--code", code]
+    if app.store_var.get():
+        args.append("--store")
+        exp = app.store_expiration_var.get().strip()
+        if exp:
+            args += ["--store-expiration", exp]
+        downloads = app.store_downloads_var.get().strip()
+        if downloads:
+            args += ["--store-downloads", downloads]
+    return args
+
+
 def stream_process(args, on_line, on_done):
     """Launch args, streaming decoded output lines to on_line and the final
     (returncode, error) to on_done. Both callbacks may be called from a
@@ -305,6 +367,7 @@ class SendTab(tk.Frame):
             self._set_status(msg, error=True)
             return
 
+        self.stats_label.config(text="")
         self.busy = True
         self.cancelled = False
         names = ", ".join(os.path.basename(p) for p in paths)
@@ -326,7 +389,10 @@ class SendTab(tk.Frame):
         relay = self.app.relay_var.get().strip()
         if relay:
             args += ["--relay", relay]
-        args += ["send", *paths]
+        args += build_global_args(self.app)
+        args += ["send"]
+        args += build_send_args(self.app)
+        args += paths
 
         self.proc = stream_process(
             args,
@@ -516,6 +582,7 @@ class ReceiveTab(tk.Frame):
             self._set_status("Enter the code your friend sent you.", error=True)
             return
 
+        self.stats_label.config(text="")
         self.busy = True
         self.cancelled = False
         self.last_saved_path = None
@@ -536,6 +603,7 @@ class ReceiveTab(tk.Frame):
         relay = self.app.relay_var.get().strip()
         if relay:
             args += ["--relay", relay]
+        args += build_global_args(self.app)
         args += ["--out", self.out_dir, code]
 
         self.proc = stream_process(
@@ -694,6 +762,148 @@ class RunningTab(tk.Frame):
         self._refresh()
 
 
+class ScrollableFrame(tk.Frame):
+    """A vertically scrollable container. Put widgets in .inner, not self."""
+
+    def __init__(self, master, **kwargs):
+        super().__init__(master, **kwargs)
+        canvas = tk.Canvas(self, bg=BG, highlightthickness=0)
+        scrollbar = tk.Scrollbar(self, orient="vertical", command=canvas.yview)
+        self.inner = tk.Frame(canvas, bg=BG)
+
+        self.inner.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        window = canvas.create_window((0, 0), window=self.inner, anchor="nw")
+        canvas.bind("<Configure>", lambda e: canvas.itemconfig(window, width=e.width))
+        canvas.configure(yscrollcommand=scrollbar.set)
+
+        canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+
+        def _on_mousewheel(event):
+            canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+
+        # Scoped to when the mouse is actually over this canvas, so it
+        # doesn't hijack scrolling on other tabs.
+        canvas.bind("<Enter>", lambda e: canvas.bind_all("<MouseWheel>", _on_mousewheel))
+        canvas.bind("<Leave>", lambda e: canvas.unbind_all("<MouseWheel>"))
+
+
+class SettingsTab(tk.Frame):
+    """Exposes croc's own flags -- the ones relevant to this app -- as
+    toggles/sliders/fields. Applied to every future send/receive; persisted
+    to the same settings file as the relay address."""
+
+    def __init__(self, master, app):
+        super().__init__(master, bg=BG)
+        self.app = app
+        self._build_ui()
+
+    def _section(self, parent, title):
+        tk.Label(parent, text=title, bg=BG, fg=ACCENT, font=("Segoe UI", 10, "bold")).pack(
+            anchor="w", padx=16, pady=(16, 4)
+        )
+
+    def _checkbox(self, parent, var, text):
+        tk.Checkbutton(
+            parent, text=text, variable=var,
+            bg=BG, fg=FG, selectcolor=BG_DROP, activebackground=BG, activeforeground=FG,
+            highlightthickness=0, bd=0, font=("Segoe UI", 9), anchor="w", justify="left", wraplength=380,
+        ).pack(fill="x", padx=16, pady=2)
+
+    def _entry_row(self, parent, label, var):
+        row = tk.Frame(parent, bg=BG)
+        row.pack(fill="x", padx=16, pady=3)
+        tk.Label(row, text=label, bg=BG, fg=MUTED, font=("Segoe UI", 9), anchor="w").pack(side="left")
+        entry = tk.Entry(
+            row, textvariable=var, font=("Segoe UI", 9),
+            bg=BG_DROP, fg=FG, insertbackground=FG, relief="flat", width=14,
+        )
+        entry.pack(side="right", ipady=2)
+
+    def _slider_row(self, parent, label, var, frm, to):
+        row = tk.Frame(parent, bg=BG)
+        row.pack(fill="x", padx=16, pady=(3, 6))
+        top = tk.Frame(row, bg=BG)
+        top.pack(fill="x")
+        tk.Label(top, text=label, bg=BG, fg=MUTED, font=("Segoe UI", 9)).pack(side="left")
+        tk.Label(top, textvariable=var, bg=BG, fg=FG, font=("Segoe UI", 9)).pack(side="right")
+        tk.Scale(
+            row, from_=frm, to=to, orient="horizontal", variable=var,
+            bg=BG, fg=FG, troughcolor=BG_DROP, highlightthickness=0, bd=0,
+            showvalue=False, sliderrelief="flat",
+        ).pack(fill="x")
+
+    def _dropdown_row(self, parent, label, var, options):
+        row = tk.Frame(parent, bg=BG)
+        row.pack(fill="x", padx=16, pady=3)
+        tk.Label(row, text=label, bg=BG, fg=MUTED, font=("Segoe UI", 9)).pack(side="left")
+        ttk.Combobox(
+            row, textvariable=var, values=options, state="readonly", font=("Segoe UI", 9), width=10,
+        ).pack(side="right")
+
+    def _build_ui(self):
+        tk.Label(
+            self, text="Applies to your next send/receive. Saved automatically.",
+            bg=BG, fg=MUTED, font=("Segoe UI", 9),
+        ).pack(anchor="w", padx=16, pady=(12, 0))
+
+        scroll = ScrollableFrame(self, bg=BG)
+        scroll.pack(fill="both", expand=True)
+        body = scroll.inner
+        app = self.app
+
+        self._section(body, "Performance")
+        self._checkbox(body, app.no_compress_var, "Disable compression (helps with already-compressed files: video, zip, most photos)")
+        self._slider_row(body, "Parallel transfer streams", app.transfers_var, 1, 16)
+        self._dropdown_row(body, "Hash algorithm", app.hash_var, ["xxhash", "imohash", "md5", "highway"])
+        self._dropdown_row(body, "Transport", app.transport_var, ["auto", "relay", "derp"])
+        self._entry_row(body, "Throttle upload (e.g. 500k, blank = off):", app.throttle_var)
+
+        self._section(body, "When a file already exists")
+        self._dropdown_row(body, "On the receiving end", app.exists_behavior_var, ["ask", "overwrite", "rename"])
+
+        self._section(body, "Sending")
+        self._checkbox(body, app.zip_var, "Zip folders before sending")
+        self._checkbox(body, app.git_var, "Respect .gitignore")
+        self._entry_row(body, "Exclude (comma-separated):", app.exclude_var)
+        self._entry_row(body, "Custom code phrase (optional):", app.code_var)
+
+        self._section(body, "Network")
+        self._checkbox(body, app.local_only_var, "Force local network only (unreliable on some setups)")
+        self._entry_row(body, "Base port (for self-hosted relays):", app.port_var)
+        self._entry_row(body, "Relay password (optional):", app.pass_var)
+        self._entry_row(body, "SOCKS5 proxy (optional):", app.socks5_var)
+        self._checkbox(body, app.internal_dns_var, "Use built-in DNS resolver")
+
+        self._section(body, "Async (Store) mode")
+        self._checkbox(body, app.store_var, "Upload once, let the receiver grab it later (no need to be online at the same time)")
+        self._entry_row(body, "Expires after (e.g. 1d, 12h):", app.store_expiration_var)
+        self._entry_row(body, "Max downloads:", app.store_downloads_var)
+
+        tk.Button(body, text="Reset to defaults", command=self._reset_defaults).pack(pady=16)
+
+    def _reset_defaults(self):
+        app = self.app
+        app.no_compress_var.set(False)
+        app.transfers_var.set(4)
+        app.hash_var.set("xxhash")
+        app.transport_var.set("auto")
+        app.throttle_var.set("")
+        app.exists_behavior_var.set("ask")
+        app.zip_var.set(False)
+        app.git_var.set(False)
+        app.exclude_var.set("")
+        app.code_var.set("")
+        app.local_only_var.set(False)
+        app.port_var.set("")
+        app.pass_var.set("")
+        app.socks5_var.set("")
+        app.internal_dns_var.set(False)
+        app.store_var.set(False)
+        app.store_expiration_var.set("1d")
+        app.store_downloads_var.set("1")
+
+
 class CrocApp(TkinterDnD.Tk):
     def __init__(self):
         super().__init__()
@@ -726,15 +936,35 @@ class CrocApp(TkinterDnD.Tk):
 
         self.settings = load_settings()
         self.relay_var = tk.StringVar(value=self.settings.get("relay", ""))
+        self.no_compress_var = tk.BooleanVar(value=self.settings.get("no_compress", False))
+        self.transfers_var = tk.IntVar(value=self.settings.get("transfers", 4))
+        self.hash_var = tk.StringVar(value=self.settings.get("hash", "xxhash"))
+        self.transport_var = tk.StringVar(value=self.settings.get("transport", "auto"))
+        self.throttle_var = tk.StringVar(value=self.settings.get("throttle", ""))
+        self.exists_behavior_var = tk.StringVar(value=self.settings.get("exists_behavior", "ask"))
+        self.zip_var = tk.BooleanVar(value=self.settings.get("zip", False))
+        self.git_var = tk.BooleanVar(value=self.settings.get("git", False))
+        self.exclude_var = tk.StringVar(value=self.settings.get("exclude", ""))
+        self.code_var = tk.StringVar(value=self.settings.get("code", ""))
+        self.local_only_var = tk.BooleanVar(value=self.settings.get("local_only", False))
+        self.port_var = tk.StringVar(value=self.settings.get("port", ""))
+        self.pass_var = tk.StringVar(value=self.settings.get("pass", ""))
+        self.socks5_var = tk.StringVar(value=self.settings.get("socks5", ""))
+        self.internal_dns_var = tk.BooleanVar(value=self.settings.get("internal_dns", False))
+        self.store_var = tk.BooleanVar(value=self.settings.get("store", False))
+        self.store_expiration_var = tk.StringVar(value=self.settings.get("store_expiration", "1d"))
+        self.store_downloads_var = tk.StringVar(value=self.settings.get("store_downloads", "1"))
 
         self.notebook = ttk.Notebook(self)
         self.notebook.pack(fill="both", expand=True)
 
         self.send_tab = SendTab(self.notebook, self)
         self.receive_tab = ReceiveTab(self.notebook, self)
+        self.settings_tab = SettingsTab(self.notebook, self)
         self.running_tab = RunningTab(self.notebook, self)
         self.notebook.add(self.send_tab, text="Send")
         self.notebook.add(self.receive_tab, text="Receive")
+        self.notebook.add(self.settings_tab, text="Settings")
         self.notebook.add(self.running_tab, text="Running")
 
         if CROC_PATH is None:
@@ -767,9 +997,32 @@ class CrocApp(TkinterDnD.Tk):
         stamp = time.strftime("%I:%M %p").lstrip("0")
         self.statusbar.config(text=f"{text}   ·   {stamp}", bg=bg, fg=fg)
 
+    def _current_settings(self):
+        return {
+            "relay": self.relay_var.get().strip(),
+            "no_compress": self.no_compress_var.get(),
+            "transfers": self.transfers_var.get(),
+            "hash": self.hash_var.get(),
+            "transport": self.transport_var.get(),
+            "throttle": self.throttle_var.get().strip(),
+            "exists_behavior": self.exists_behavior_var.get(),
+            "zip": self.zip_var.get(),
+            "git": self.git_var.get(),
+            "exclude": self.exclude_var.get().strip(),
+            "code": self.code_var.get().strip(),
+            "local_only": self.local_only_var.get(),
+            "port": self.port_var.get().strip(),
+            "pass": self.pass_var.get().strip(),
+            "socks5": self.socks5_var.get().strip(),
+            "internal_dns": self.internal_dns_var.get(),
+            "store": self.store_var.get(),
+            "store_expiration": self.store_expiration_var.get().strip(),
+            "store_downloads": self.store_downloads_var.get().strip(),
+        }
+
     def _on_close(self):
         try:
-            save_settings({"relay": self.relay_var.get().strip()})
+            save_settings(self._current_settings())
             self.send_tab.shutdown()
             self.receive_tab.shutdown()
             self.destroy()

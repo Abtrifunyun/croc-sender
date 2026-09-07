@@ -18,6 +18,7 @@ Windows will likely show a SmartScreen warning ("Windows protected your PC") sin
 - **`croc://` link handler** — clicking a `croc://code` link opens straight into the Receive tab, already downloading.
 - **"Send with croc" right-click menu** — on any file or folder in Explorer, including multi-select.
 - **"Compatible with older/mobile apps (v10)" toggle** — croc v11 changed its handshake protocol in a way that's incompatible with clients still on v10 (e.g. crocgui on Android). Check this box on both ends to talk to one of those.
+- **Custom relay field** — point both sides at a self-hosted relay instead of croc's shared public one (see [Self-hosting a relay](#self-hosting-a-relay) below). Shared between both tabs and remembered between sessions.
 
 ## Running from source
 
@@ -59,6 +60,19 @@ Runs PyInstaller and copies `croc.exe` from your own local install into `dist\` 
 Everything it writes lives under `HKEY_CURRENT_USER\Software\Classes` — your own user account only, no admin rights needed. Run `.\unregister_integrations.ps1` to remove it again; both scripts were round-trip tested (install → uninstall → verify every key gone → reinstall) before being included here.
 
 Heads up: a `croc://code` link only does something special on a machine that has also run `register_integrations.ps1`. Sending one to someone who hasn't is a no-op for them — the plain code phrase (or the QR code) still works everywhere.
+
+## Self-hosting a relay
+
+By default, transfers route through croc's free public relay (`croc.schollz.com`), shared by everyone using croc at that moment — which is usually the actual bottleneck on a large transfer, not either side's own internet speed. Running your own relay means you're only using your own bandwidth.
+
+1. On any always-on machine, start it:
+   ```
+   croc relay --source-join-limit 10000
+   ```
+   (`--source-join-limit` is the public relay's anti-abuse cap on room joins per minute — raise it for your own private relay so you never trip it yourself.)
+2. Forward TCP ports **9009–9013** on your router to that machine's local IP, and allow them through its firewall.
+3. Find that network's public IP (search "what is my ip" from a browser on it). If a VPN is active on the relay machine, this step will return the VPN's exit IP instead of your real one — check with the VPN off, or confirm via `Get-NetRoute -DestinationPrefix '0.0.0.0/0'` that traffic isn't routing through a VPN adapter.
+4. Enter `<that-ip>:9009` in the app's **Relay (optional)** field — same value on both the sending and receiving side. It's remembered between sessions.
 
 ## Troubleshooting
 

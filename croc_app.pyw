@@ -1,4 +1,5 @@
 import io
+import json
 import os
 import re
 import shutil
@@ -59,6 +60,23 @@ STATUSBAR_IDLE_BG = "#2a2a2a"
 NOT_FOUND_MSG = "croc not found on PATH. Install it, then restart this app."
 COMPAT_NOT_FOUND_MSG = "Compatible (v10) croc not bundled with this build."
 
+SETTINGS_PATH = Path.home() / "AppData/Local/croc-sender/settings.json"
+
+
+def load_settings():
+    try:
+        return json.loads(SETTINGS_PATH.read_text())
+    except Exception:
+        return {}
+
+
+def save_settings(data):
+    try:
+        SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
+        SETTINGS_PATH.write_text(json.dumps(data))
+    except Exception:
+        pass
+
 
 def stream_process(args, on_line, on_done):
     """Launch args, streaming decoded output lines to on_line and the final
@@ -117,12 +135,21 @@ class SendTab(tk.Frame):
         self._build_ui()
 
     def _build_ui(self):
+        relay_row = tk.Frame(self, bg=BG)
+        relay_row.pack(fill="x", padx=20, pady=(10, 0))
+        tk.Label(relay_row, text="Relay (optional):", bg=BG, fg=MUTED, font=("Segoe UI", 9)).pack(side="left")
+        self.relay_entry = tk.Entry(
+            relay_row, textvariable=self.app.relay_var, font=("Segoe UI", 9),
+            bg=BG_DROP, fg=FG, insertbackground=FG, relief="flat",
+        )
+        self.relay_entry.pack(side="left", fill="x", expand=True, ipady=3, padx=(6, 0))
+
         self.compat_var = tk.BooleanVar(value=False)
         tk.Checkbutton(
             self, text="Compatible with older/mobile apps (v10)", variable=self.compat_var,
             bg=BG, fg=MUTED, selectcolor=BG_DROP, activebackground=BG, activeforeground=FG,
             highlightthickness=0, bd=0, font=("Segoe UI", 9),
-        ).pack(pady=(10, 0))
+        ).pack(pady=(6, 0))
 
         self.drop_zone = tk.Frame(self, bg=BG_DROP, highlightbackground=MUTED, highlightthickness=2, bd=0)
         self.drop_zone.pack(fill="both", expand=True, padx=20, pady=(10, 10))
@@ -207,8 +234,14 @@ class SendTab(tk.Frame):
         self.app.set_statusbar(f"Sending {names}…", "busy")
         self.last_line = ""
 
+        args = [croc, "--yes"]
+        relay = self.app.relay_var.get().strip()
+        if relay:
+            args += ["--relay", relay]
+        args += ["send", *paths]
+
         self.proc = stream_process(
-            [croc, "--yes", "send", *paths],
+            args,
             on_line=lambda line: self.after(0, self._handle_line, line),
             on_done=lambda rc, err: self.after(0, self._on_finished, rc, err, names),
         )
@@ -311,6 +344,15 @@ class ReceiveTab(tk.Frame):
         self.folder_label.pack(side="left", fill="x", expand=True, padx=(6, 8))
         tk.Button(folder_row, text="Change…", command=self._choose_folder).pack(side="right")
 
+        relay_row = tk.Frame(self, bg=BG)
+        relay_row.pack(fill="x", padx=20, pady=(0, 6))
+        tk.Label(relay_row, text="Relay (optional):", bg=BG, fg=MUTED, font=("Segoe UI", 9)).pack(side="left")
+        self.relay_entry = tk.Entry(
+            relay_row, textvariable=self.app.relay_var, font=("Segoe UI", 9),
+            bg=BG_DROP, fg=FG, insertbackground=FG, relief="flat",
+        )
+        self.relay_entry.pack(side="left", fill="x", expand=True, ipady=3, padx=(6, 0))
+
         self.compat_var = tk.BooleanVar(value=False)
         tk.Checkbutton(
             self, text="Compatible with older/mobile apps (v10)", variable=self.compat_var,
@@ -368,8 +410,14 @@ class ReceiveTab(tk.Frame):
         self.last_line = ""
 
         os.makedirs(self.out_dir, exist_ok=True)
+        args = [croc, "--yes"]
+        relay = self.app.relay_var.get().strip()
+        if relay:
+            args += ["--relay", relay]
+        args += ["--out", self.out_dir, code]
+
         self.proc = stream_process(
-            [croc, "--yes", "--out", self.out_dir, code],
+            args,
             on_line=lambda line: self.after(0, self._handle_line, line),
             on_done=lambda rc, err: self.after(0, self._on_finished, rc, err),
         )
@@ -439,8 +487,8 @@ class CrocApp(TkinterDnD.Tk):
     def __init__(self):
         super().__init__()
         self.title("croc")
-        self.geometry("460x540")
-        self.minsize(420, 470)
+        self.geometry("460x570")
+        self.minsize(420, 500)
         self.configure(bg=BG)
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
@@ -459,6 +507,9 @@ class CrocApp(TkinterDnD.Tk):
             anchor="w", padx=10, pady=5,
         )
         self.statusbar.pack(fill="x", side="bottom")
+
+        self.settings = load_settings()
+        self.relay_var = tk.StringVar(value=self.settings.get("relay", ""))
 
         self.notebook = ttk.Notebook(self)
         self.notebook.pack(fill="both", expand=True)
@@ -500,6 +551,7 @@ class CrocApp(TkinterDnD.Tk):
 
     def _on_close(self):
         try:
+            save_settings({"relay": self.relay_var.get().strip()})
             self.send_tab.shutdown()
             self.receive_tab.shutdown()
             self.destroy()

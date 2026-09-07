@@ -49,7 +49,7 @@ RECEIVE_PROGRESS_DONE_PATTERN = re.compile(r"^(\S+)\s+100%\s*\|")
 PERCENT_PATTERN = re.compile(r"(\d{1,3})%")
 SIZE_PATTERN = re.compile(r"\(([\d.]+)\s*(B|kB|MB|GB)\)")
 SPEED_PATTERN = re.compile(r"([\d.]+)\s*(B|kB|MB|GB)/s")
-UNIT_MULTIPLIERS = {"B": 1, "kB": 1_000, "MB": 1_000_000, "GB": 1_000_000_000}
+UNIT_MULTIPLIERS = {"B": 1, "kB": 1024, "MB": 1024**2, "GB": 1024**3}
 
 BG = "#1e1e1e"
 BG_DROP = "#2a2a2a"
@@ -84,12 +84,12 @@ def save_settings(data):
 
 
 def format_bytes_per_sec(bps):
-    if bps >= 1_000_000_000:
-        return f"{bps / 1_000_000_000:.2f} GB/s"
-    if bps >= 1_000_000:
-        return f"{bps / 1_000_000:.2f} MB/s"
-    if bps >= 1_000:
-        return f"{bps / 1_000:.1f} kB/s"
+    if bps >= 1024**3:
+        return f"{bps / 1024**3:.2f} GB/s"
+    if bps >= 1024**2:
+        return f"{bps / 1024**2:.2f} MB/s"
+    if bps >= 1024:
+        return f"{bps / 1024:.1f} kB/s"
     return f"{bps:.0f} B/s"
 
 
@@ -118,6 +118,12 @@ class TransferStats:
         self.last_bps = None
 
     def feed_line(self, line):
+        if line.startswith("Hashing "):
+            # croc hashes the file for integrity verification before/after
+            # the actual transfer -- that's disk read speed, not network
+            # speed, but it's printed in the exact same "N% (X unit/s)"
+            # format. Ignore it entirely rather than let it pollute stats.
+            return
         if self.total_bytes is None:
             m = SIZE_PATTERN.search(line)
             if m:
@@ -336,9 +342,10 @@ class SendTab(tk.Frame):
     def _handle_line(self, line):
         self.last_line = line
         self.stats.feed_line(line)
-        pm = PERCENT_PATTERN.search(line)
-        if pm:
-            self.progress_var.set(int(pm.group(1)))
+        if not line.startswith("Hashing "):
+            pm = PERCENT_PATTERN.search(line)
+            if pm:
+                self.progress_var.set(int(pm.group(1)))
         match = SEND_CODE_PATTERN.search(line)
         if match:
             # The code is always the last token on the line -- anything
@@ -545,9 +552,10 @@ class ReceiveTab(tk.Frame):
     def _handle_line(self, line):
         self.last_line = line
         self.stats.feed_line(line)
-        pm = PERCENT_PATTERN.search(line)
-        if pm:
-            self.progress_var.set(int(pm.group(1)))
+        if not line.startswith("Hashing "):
+            pm = PERCENT_PATTERN.search(line)
+            if pm:
+                self.progress_var.set(int(pm.group(1)))
         match = RECEIVE_FILE_PATTERN.search(line) or RECEIVE_PROGRESS_DONE_PATTERN.search(line)
         if match:
             name = match.group(1)
